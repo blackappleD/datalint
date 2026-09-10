@@ -1,7 +1,12 @@
-"""cleaner 模块单元测试: 去空白、时间戳归一、按字段去重."""
+"""cleaner 模块单元测试: 去空白、时间戳归一、按字段去重(按内置默认 SCHEMA)."""
 
-from datalint.cleaner import Deduplicator, clean, normalize_timestamp
-from datalint.schema import DUPLICATE, TIMESTAMP_INVALID, Rejection
+from datalint import cleaner
+from datalint.cleaner import Deduplicator, normalize_timestamp
+from datalint.schema import DUPLICATE, SCHEMA, TIMESTAMP_INVALID, Rejection
+
+
+def clean(line_no, record):
+    return cleaner.clean(line_no, record, SCHEMA)
 
 
 def record_with(**overrides):
