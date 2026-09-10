@@ -360,3 +360,409 @@ def test_all_empty_dedup_tokens_exit_2(write_jsonl, capsys):
     code = run_cli([str(path), "--dedup-by", ","])
 
     assert code == 2
+
+
+# ---------- v2 US1: 外部 schema ----------
+
+
+CUSTOM_SCHEMA = {
+    "fields": [
+        {"name": "user_id", "type": "string", "required": True},
+        {"name": "level", "type": "enum", "required": True, "enum_values": ["gold", "silver"]},
+        {"name": "created_at", "type": "timestamp", "required": True},
+    ]
+}
+
+
+def test_external_schema_replaces_builtin(write_jsonl, write_schema):
+    schema_path = write_schema(CUSTOM_SCHEMA)
+    # 记录符合自定义 schema, 但完全不含内置 schema 的必填字段(id/name/category/timestamp)
+    path = write_jsonl(
+        [
+            {"user_id": "u1", "level": "gold", "created_at": "2026-09-10T08:00:00Z"},
+            {"user_id": "u2", "level": "bronze", "created_at": "2026-09-10T08:00:00Z"},
+        ]
+    )
+
+    code = run_cli([str(path), "--schema", str(schema_path)])
+
+    assert code == 0
+    clean = read_jsonl_file(path.parent / "input.clean.jsonl")
+    assert [r["user_id"] for r in clean] == ["u1"]
+    rejects = read_jsonl_file(path.parent / "input.rejects.jsonl")
+    assert rejects[0]["error_type"] == "enum_error"
+    assert "bronze" in rejects[0]["reason"]
+
+
+def test_external_schema_timestamp_normalized(write_jsonl, write_schema):
+    schema_path = write_schema(CUSTOM_SCHEMA)
+    path = write_jsonl([{"user_id": "u1", "level": "gold", "created_at": "2026/09/10 08:00:00"}])
+
+    run_cli([str(path), "--schema", str(schema_path)])
+
+    clean = read_jsonl_file(path.parent / "input.clean.jsonl")
+    assert clean[0]["created_at"] == "2026-09-10T08:00:00Z"
+
+
+def test_dedup_by_validated_against_external_schema(write_jsonl, write_schema, capsys):
+    schema_path = write_schema(CUSTOM_SCHEMA)
+    path = write_jsonl(
+        [
+            {"user_id": "u1", "level": "gold", "created_at": "2026-09-10T08:00:00Z"},
+            {"user_id": "u1", "level": "silver", "created_at": "2026-09-10T08:00:00Z"},
+        ]
+    )
+
+    # user_id 在外部 schema 中合法(在内置 schema 中不存在)
+    code = run_cli([str(path), "--schema", str(schema_path), "--dedup-by", "user_id"])
+    assert code == 0
+    assert len(read_jsonl_file(path.parent / "input.clean.jsonl")) == 1
+
+    # id 在内置 schema 中合法, 但不在外部 schema 中 → 参数错误
+    code = run_cli([str(path), "--schema", str(schema_path), "--dedup-by", "id"])
+    assert code == 2
+
+
+def test_invalid_schema_content_exits_2_without_outputs(write_jsonl, write_schema, capsys):
+    schema_path = write_schema({"fields": [{"name": "a", "type": "datetime"}]})
+    path = write_jsonl([valid_line()])
+
+    code = run_cli([str(path), "--schema", str(schema_path)])
+
+    assert code == 2
+    err = capsys.readouterr().err
+    assert "a" in err and "datetime" in err
+    assert not (path.parent / "input.clean.jsonl").exists()
+    assert not (path.parent / "input.rejects.jsonl").exists()
+
+
+def test_invalid_schema_json_syntax_exits_2(write_jsonl, write_schema, capsys):
+    schema_path = write_schema('{"fields": [')
+    path = write_jsonl([valid_line()])
+
+    code = run_cli([str(path), "--schema", str(schema_path)])
+
+    assert code == 2
+    assert "JSON" in capsys.readouterr().err
+
+
+def test_missing_schema_file_exits_1(write_jsonl, tmp_path, capsys):
+    path = write_jsonl([valid_line()])
+
+    code = run_cli([str(path), "--schema", str(tmp_path / "nope.json")])
+
+    assert code == 1
+    assert not (path.parent / "input.clean.jsonl").exists()
+
+
+def test_without_schema_option_builtin_applies(write_jsonl):
+    path = write_jsonl([valid_line()])
+
+    code = run_cli([str(path)])
+
+    assert code == 0
+    assert len(read_jsonl_file(path.parent / "input.clean.jsonl")) == 1
+
+
+# ---------- v2 US2: CSV 输入与可选输出格式 ----------
+
+
+def read_csv_file(path):
+    import csv
+
+    with open(path, encoding="utf-8", newline="") as fh:
+        return list(csv.DictReader(fh))
+
+
+def test_csv_input_auto_detected_by_extension(write_csv):
+    path = write_csv(
+        ["id", "name", "category", "timestamp"],
+        [["1", "  Alice  ", "A", "2026/09/10 08:00:00"]],
+    )
+
+    code = run_cli([str(path)])
+
+    assert code == 0
+    clean = read_jsonl_file(path.parent / "input.clean.jsonl")
+    assert clean[0]["name"] == "Alice"
+    assert clean[0]["timestamp"] == "2026-09-10T08:00:00Z"
+
+
+def test_csv_in_csv_out(write_csv):
+    path = write_csv(
+        ["id", "name", "category", "score", "timestamp"],
+        [["1", "Alice", "A", "95", "2026-09-10T08:00:00Z"]],
+    )
+
+    code = run_cli([str(path), "--output-format", "csv"])
+
+    assert code == 0
+    rows = read_csv_file(path.parent / "input.clean.csv")
+    assert rows[0]["id"] == "1"
+    assert rows[0]["score"] == "95"
+    assert rows[0]["timestamp"] == "2026-09-10T08:00:00Z"
+
+
+def test_jsonl_and_csv_equivalent_inputs_same_report(write_jsonl, write_csv, capsys):
+    records = [
+        ("1", "Alice", "A", "2026-09-10T08:00:00Z"),
+        ("2", "Bob", "X", "2026-09-10T08:00:00Z"),  # enum_error
+        ("3", "Carol", "B", "bad-ts"),  # timestamp_invalid
+    ]
+    jsonl_path = write_jsonl(
+        [
+            {"id": i, "name": n, "category": c, "timestamp": t}
+            for i, n, c, t in records
+        ],
+        name="a.jsonl",
+    )
+    csv_path = write_csv(
+        ["id", "name", "category", "timestamp"],
+        [list(r) for r in records],
+        name="b.csv",
+    )
+
+    run_cli([str(jsonl_path), "--report-format", "json"])
+    report_jsonl = json.loads(capsys.readouterr().out)
+    run_cli([str(csv_path), "--report-format", "json"])
+    report_csv = json.loads(capsys.readouterr().out)
+
+    assert report_jsonl == report_csv
+    assert report_jsonl["total"] == 3
+    assert report_jsonl["passed"] == 1
+
+
+def test_jsonl_and_csv_outputs_equivalent(write_jsonl, tmp_path):
+    path = write_jsonl([valid_line("1", score=95)])
+
+    run_cli([str(path), "-o", str(tmp_path / "out.jsonl")])
+    run_cli([str(path), "--output-format", "csv", "-o", str(tmp_path / "out.csv")])
+
+    jsonl_record = read_jsonl_file(tmp_path / "out.jsonl")[0]
+    csv_record = read_csv_file(tmp_path / "out.csv")[0]
+    assert set(jsonl_record) == set(csv_record)
+    for key, value in jsonl_record.items():
+        assert str(value) == csv_record[key]
+
+
+def test_undetectable_format_exits_1_with_hint(tmp_path, capsys):
+    path = tmp_path / "data.bin"
+    path.write_text("plain words without structure\n", encoding="utf-8")
+
+    code = run_cli([str(path)])
+
+    assert code == 1
+    assert "--input-format" in capsys.readouterr().err
+
+
+def test_explicit_input_format_overrides_detection(tmp_path):
+    path = tmp_path / "data.txt"
+    path.write_text(
+        "id,name,category,timestamp\n1,Alice,A,2026-09-10T08:00:00Z\n", encoding="utf-8"
+    )
+
+    code = run_cli([str(path), "--input-format", "csv"])
+
+    assert code == 0
+    clean = read_jsonl_file(tmp_path / "data.clean.jsonl")
+    assert clean[0]["id"] == "1"
+
+
+def test_csv_invalid_header_exits_1(write_csv, capsys):
+    path = write_csv(["id", "id", "category"], [["1", "x", "A"]])
+
+    code = run_cli([str(path)])
+
+    assert code == 1
+    assert "表头" in capsys.readouterr().err
+    assert not (path.parent / "input.clean.jsonl").exists()
+
+
+# ---------- v2 US3: --mask 脱敏 ----------
+
+
+def test_mask_mixed_modes(write_jsonl):
+    path = write_jsonl(
+        [
+            valid_line(
+                "1",
+                email="alice@example.com",
+                phone="13800138000",
+                home_phone="01088886666",
+            )
+        ]
+    )
+
+    code = run_cli([str(path), "--mask", "email:equal", "--mask", "phone:contain"])
+
+    assert code == 0
+    record = read_jsonl_file(path.parent / "input.clean.jsonl")[0]
+    assert record["email"] == "a***************m"
+    assert record["phone"] == "1*********0"
+    assert record["home_phone"] == "0*********6"
+    assert record["name"] == "Alice"  # 未命中字段原样
+
+
+def test_mask_comma_merged_form_equivalent(write_jsonl):
+    path = write_jsonl([valid_line("1", email="alice@example.com", phone="13800138000")])
+
+    run_cli([str(path), "--mask", "email:equal,phone:contain"])
+
+    record = read_jsonl_file(path.parent / "input.clean.jsonl")[0]
+    assert record["email"] == "a***************m"
+    assert record["phone"] == "1*********0"
+
+
+def test_mask_original_value_absent_from_output(write_jsonl):
+    secret = "alice@example.com"
+    path = write_jsonl([valid_line("1", email=secret)])
+
+    run_cli([str(path), "--mask", "email"])
+
+    output_text = (path.parent / "input.clean.jsonl").read_text(encoding="utf-8")
+    assert secret not in output_text
+
+
+def test_dedup_by_masked_field_uses_real_value(write_jsonl):
+    path = write_jsonl(
+        [
+            valid_line("1", name="alice@a.com"),
+            valid_line("2", name="alice@b.com"),  # 掩码后同为 a*********m, 但真实值不同
+        ]
+    )
+
+    code = run_cli([str(path), "--dedup-by", "name", "--mask", "name"])
+
+    assert code == 0
+    clean = read_jsonl_file(path.parent / "input.clean.jsonl")
+    assert len(clean) == 2  # 真实值不同 → 不判重
+
+
+def test_report_identical_with_and_without_mask(write_jsonl, write_csv, capsys):
+    lines = [
+        valid_line("1", email="a@x.com"),
+        valid_line("1", email="b@y.com"),
+        {"id": "3", "category": "A", "timestamp": "2026-09-10T08:00:00Z"},
+    ]
+    path = write_jsonl(lines)
+
+    run_cli([str(path), "--dedup-by", "id", "--report-format", "json"])
+    without_mask = json.loads(capsys.readouterr().out)
+    run_cli([str(path), "--dedup-by", "id", "--report-format", "json", "--mask", "email"])
+    with_mask = json.loads(capsys.readouterr().out)
+
+    assert without_mask == with_mask
+
+
+def test_mask_applies_to_csv_output(write_csv):
+    path = write_csv(
+        ["id", "name", "category", "timestamp", "email"],
+        [["1", "Alice", "A", "2026-09-10T08:00:00Z", "alice@example.com"]],
+    )
+
+    run_cli([str(path), "--output-format", "csv", "--mask", "email"])
+
+    rows = read_csv_file(path.parent / "input.clean.csv")
+    assert rows[0]["email"] == "a***************m"
+
+
+def test_invalid_mask_mode_exits_2(write_jsonl, capsys):
+    path = write_jsonl([valid_line()])
+
+    code = run_cli([str(path), "--mask", "email:fuzzy"])
+
+    assert code == 2
+    assert "fuzzy" in capsys.readouterr().err
+
+
+def test_empty_mask_pattern_exits_2(write_jsonl):
+    path = write_jsonl([valid_line()])
+
+    assert run_cli([str(path), "--mask", ","]) == 2
+    assert run_cli([str(path), "--mask", ":equal"]) == 2
+
+
+def test_rejects_file_keeps_original_values_by_design(write_jsonl):
+    # 剔除明细面向人工回溯, 按设计保留未脱敏原值(README 已声明)
+    path = write_jsonl(
+        [
+            valid_line("1", email="alice@example.com"),
+            valid_line("1", email="bob@example.com"),  # duplicate
+        ]
+    )
+
+    run_cli([str(path), "--dedup-by", "id", "--mask", "email"])
+
+    clean = read_jsonl_file(path.parent / "input.clean.jsonl")
+    assert clean[0]["email"] == "a***************m"
+    rejects = read_jsonl_file(path.parent / "input.rejects.jsonl")
+    assert rejects[0]["record"]["email"] == "bob@example.com"
+
+
+# ---------- v2 US4: 不可解析行的持续处理 ----------
+
+
+def test_csv_mixed_broken_rows_never_abort(write_csv, capsys):
+    path = write_csv(
+        ["id", "name", "category", "score", "timestamp"],
+        [
+            ["1", "Alice", "A", "95", "2026-09-10T08:00:00Z"],
+            "2,Bob,B",  # 列数不匹配
+            ["3", "Carol", "C", "not-a-number", "2026-09-10T08:00:00Z"],  # 类型转换失败
+            ["4", "Dave", "Z", "80", "2026-09-10T08:00:00Z"],  # 枚举非法
+            ["5", "Eve", "B", "70", "2026-09-10T08:00:00Z"],
+        ],
+    )
+
+    code = run_cli([str(path), "--report-format", "json"])
+
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["total"] == 5
+    assert payload["passed"] == 2
+    assert payload["errors"]["parse_error"] == 1
+    assert payload["errors"]["type_error"] == 1
+    assert payload["errors"]["enum_error"] == 1
+    rejects = read_jsonl_file(path.parent / "input.rejects.jsonl")
+    assert len(rejects) == 3
+    for reject in rejects:
+        assert isinstance(reject["line"], int)
+        assert reject["reason"]
+
+
+def test_csv_all_rows_broken_still_exits_0(write_csv, capsys):
+    path = write_csv(
+        ["id", "name", "category", "timestamp"],
+        ["only,two", "a,b,c,d,e,f", "x"],
+    )
+
+    code = run_cli([str(path), "--report-format", "json"])
+
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["passed"] == 0
+    assert payload["rejected"] == 3
+    assert read_jsonl_file(path.parent / "input.clean.jsonl") == []
+    assert len(read_jsonl_file(path.parent / "input.rejects.jsonl")) == 3
+
+
+def test_jsonl_broken_lines_regression(write_jsonl, capsys):
+    path = write_jsonl([valid_line("1"), "not json at all", valid_line("2")])
+
+    code = run_cli([str(path), "--report-format", "json"])
+
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == {
+        "total": 3,
+        "passed": 2,
+        "rejected": 1,
+        "errors": {
+            "parse_error": 1,
+            "missing_field": 0,
+            "type_error": 0,
+            "enum_error": 0,
+            "timestamp_invalid": 0,
+            "duplicate": 0,
+        },
+    }

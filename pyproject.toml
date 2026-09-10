@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "datalint"
-version = "0.1.0"
+version = "0.2.0"
 description = "清洗和质检结构化 JSONL 数据集的命令行工具"
 requires-python = ">=3.10"
 

@@ -9,16 +9,15 @@ from typing import Any, Optional, Union
 from datalint.schema import (
     DUPLICATE,
     MISSING,
-    SCHEMA,
     TIMESTAMP_INVALID,
-    TYPE_TIMESTAMP,
+    FieldSpec,
     Rejection,
+    timestamp_fields,
 )
 
 _OUTPUT_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 _SLASH_FORMAT = "%Y/%m/%d %H:%M:%S"
 _PLAIN_NUMBER = re.compile(r"^-?\d+(\.\d+)?$")
-_TIMESTAMP_FIELDS = tuple(spec.name for spec in SCHEMA if spec.type == TYPE_TIMESTAMP)
 
 
 def _from_unix(value: float) -> Optional[datetime]:
@@ -71,17 +70,19 @@ def normalize_timestamp(value: Any) -> Optional[str]:
     return dt.astimezone(timezone.utc).strftime(_OUTPUT_FORMAT)
 
 
-def clean(line_no: int, record: dict) -> Union[dict, Rejection]:
+def clean(
+    line_no: int, record: dict, schema: tuple[FieldSpec, ...]
+) -> Union[dict, Rejection]:
     """清洗一条已通过校验的记录, 返回新 dict(不修改原记录).
 
     - 所有字符串值(含 schema 外字段)去除首尾空白
-    - 时间戳字段归一为 ISO 8601 UTC; 失败返回 Rejection(timestamp_invalid)
+    - 传入 schema 的时间戳字段归一为 ISO 8601 UTC; 失败返回 Rejection(timestamp_invalid)
     """
     cleaned = {
         key: value.strip() if isinstance(value, str) else value
         for key, value in record.items()
     }
-    for field in _TIMESTAMP_FIELDS:
+    for field in timestamp_fields(schema):
         if field not in cleaned:
             continue
         normalized = normalize_timestamp(cleaned[field])

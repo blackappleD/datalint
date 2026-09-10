@@ -1,7 +1,11 @@
-"""validator 模块单元测试: 必填/类型/枚举校验."""
+"""validator 模块单元测试: 必填/类型/枚举校验(按内置默认 SCHEMA)."""
 
-from datalint.schema import ENUM_ERROR, MISSING_FIELD, TYPE_ERROR, Rejection
-from datalint.validator import validate
+from datalint import validator
+from datalint.schema import ENUM_ERROR, MISSING_FIELD, SCHEMA, TYPE_ERROR, Rejection
+
+
+def validate(line_no, record):
+    return validator.validate(line_no, record, SCHEMA)
 
 
 def valid_record(**overrides):

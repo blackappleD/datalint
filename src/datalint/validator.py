@@ -7,7 +7,6 @@ from typing import Any, Optional
 from datalint.schema import (
     ENUM_ERROR,
     MISSING_FIELD,
-    SCHEMA,
     TYPE_ENUM,
     TYPE_ERROR,
     TYPE_NUMBER,
@@ -30,12 +29,14 @@ def _type_ok(spec: FieldSpec, value: Any) -> bool:
     return False
 
 
-def validate(line_no: int, record: dict) -> Optional[Rejection]:
-    """按 SCHEMA 声明顺序校验, 返回首个错误的 Rejection; 全部通过返回 None.
+def validate(
+    line_no: int, record: dict, schema: tuple[FieldSpec, ...]
+) -> Optional[Rejection]:
+    """按传入 schema 的声明顺序校验, 返回首个错误的 Rejection; 全部通过返回 None.
 
     schema 未定义的额外字段不参与校验.
     """
-    for spec in SCHEMA:
+    for spec in schema:
         if spec.name not in record:
             if spec.required:
                 return Rejection(
