@@ -79,3 +79,7 @@ tests/
 ## 复杂度跟踪
 
 无章程违规。新增两个模块有明确单一职责，未引入投机抽象。
+
+## Bugfix 注记
+
+**Bugfix**: 2026-09-11 — [BUG-001~006] Updated from bugfix patch：时间戳输出保留亚秒精度（R2 输出格式修订）；全部输入读取改用 `utf-8-sig`（R-203/R-204 修订）；去重字段缺失跳过去重（R7 键语义修订）；cleaner 新增 `CleanStats` 统计 naive 时间戳并由 cli 汇总告警；默认输出路径基底仅剥离 `.jsonl`/`.json` 扩展名（R-207 修订）；可选字段显式 `null` 视同缺失语义。详见 [bugs/](./bugs/) 与 tasks.md 阶段 8。
