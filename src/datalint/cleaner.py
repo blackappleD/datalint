@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Optional, Union
 
@@ -15,9 +16,15 @@ from datalint.schema import (
     timestamp_fields,
 )
 
-_OUTPUT_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 _SLASH_FORMAT = "%Y/%m/%d %H:%M:%S"
 _PLAIN_NUMBER = re.compile(r"^-?\d+(\.\d+)?$")
+
+
+@dataclass
+class CleanStats:
+    """清洗过程的可观测计数(BUG-004): naive 时间戳按 UTC 假定的次数."""
+
+    naive_timestamps: int = 0
 
 
 def _from_unix(value: float) -> Optional[datetime]:
@@ -45,62 +52,89 @@ def _from_slash(text: str) -> Optional[datetime]:
         return None
 
 
+def _parse_timestamp(value: Any) -> tuple[Optional[datetime], bool]:
+    """解析三类时间戳输入, 返回 (datetime, 是否无时区被假定为 UTC).
+
+    Unix 数字按定义即 UTC 纪元秒, 不算假定; ISO 无时区与斜杠格式算假定(BUG-004).
+    """
+    if isinstance(value, bool):
+        return None, False
+    if isinstance(value, (int, float)):
+        return _from_unix(value), False
+    if isinstance(value, str):
+        text = value.strip()
+        if _PLAIN_NUMBER.match(text):
+            return _from_unix(float(text)), False
+        dt = _from_iso(text) or _from_slash(text)
+        if dt is None:
+            return None, False
+        return dt, dt.tzinfo is None
+    return None, False
+
+
+def _format_utc(dt: datetime) -> str:
+    """格式化为 ISO 8601 UTC; 亚秒精度保留并去除尾零(BUG-001)."""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    dt = dt.astimezone(timezone.utc)
+    base = dt.strftime("%Y-%m-%dT%H:%M:%S")
+    if dt.microsecond:
+        fraction = f"{dt.microsecond:06d}".rstrip("0")
+        return f"{base}.{fraction}Z"
+    return base + "Z"
+
+
 def normalize_timestamp(value: Any) -> Optional[str]:
     """将时间戳归一为 ISO 8601 UTC 字符串; 无法识别返回 None.
 
     支持三类输入: Unix 秒级数字(int/float/纯数字字符串)、ISO 8601 变体、
-    `YYYY/MM/DD HH:MM:SS`. 无时区信息的输入视为 UTC.
+    `YYYY/MM/DD HH:MM:SS`. 无时区信息的输入视为 UTC; 亚秒精度保留(去尾零).
     """
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, (int, float)):
-        dt = _from_unix(value)
-    elif isinstance(value, str):
-        text = value.strip()
-        if _PLAIN_NUMBER.match(text):
-            dt = _from_unix(float(text))
-        else:
-            dt = _from_iso(text) or _from_slash(text)
-    else:
-        return None
+    dt, _ = _parse_timestamp(value)
     if dt is None:
         return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc).strftime(_OUTPUT_FORMAT)
+    return _format_utc(dt)
 
 
 def clean(
-    line_no: int, record: dict, schema: tuple[FieldSpec, ...]
+    line_no: int,
+    record: dict,
+    schema: tuple[FieldSpec, ...],
+    stats: Optional[CleanStats] = None,
 ) -> Union[dict, Rejection]:
     """清洗一条已通过校验的记录, 返回新 dict(不修改原记录).
 
     - 所有字符串值(含 schema 外字段)去除首尾空白
     - 传入 schema 的时间戳字段归一为 ISO 8601 UTC; 失败返回 Rejection(timestamp_invalid)
+    - 可选时间戳字段值为 None(显式 null)时跳过归一, null 原样保留(BUG-006)
+    - stats 非空时累计"无时区按 UTC 假定"的次数(BUG-004)
     """
     cleaned = {
         key: value.strip() if isinstance(value, str) else value
         for key, value in record.items()
     }
     for field in timestamp_fields(schema):
-        if field not in cleaned:
+        if field not in cleaned or cleaned[field] is None:
             continue
-        normalized = normalize_timestamp(cleaned[field])
-        if normalized is None:
+        dt, naive = _parse_timestamp(cleaned[field])
+        if dt is None:
             return Rejection(
                 line_no,
                 TIMESTAMP_INVALID,
                 f"字段 {field} 时间戳格式无法识别: {record[field]!r}",
                 record,
             )
-        cleaned[field] = normalized
+        if naive and stats is not None:
+            stats.naive_timestamps += 1
+        cleaned[field] = _format_utc(dt)
     return cleaned
 
 
 class Deduplicator:
     """按指定字段组合去重, 保留首次出现的记录.
 
-    字段缺失时以 MISSING 哨兵参与键比较. 字段元组为空时不去重.
+    任一去重字段缺失时跳过去重比较(不判重也不注册键, BUG-003).
+    字段元组为空时不去重.
     """
 
     def __init__(self, fields: tuple[str, ...]):
@@ -113,6 +147,8 @@ class Deduplicator:
             return None
         # 键值为 JSON 标量, tuple 可哈希; NaN 因 NaN != NaN 不会互判重复(接受的边界行为)
         key = tuple(record.get(field, MISSING) for field in self._fields)
+        if MISSING in key:
+            return None  # 缺失不构成"内容相同"的证据, 跳过去重
         if key in self._seen:
             fields_desc = ", ".join(self._fields)
             return Rejection(

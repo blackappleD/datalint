@@ -44,6 +44,17 @@ def validate(
                 )
             continue
         value = record[spec.name]
+        if value is None:
+            # 可选字段显式 null 视同缺失语义, null 原样保留(BUG-006);
+            # 必填字段不接受 null
+            if spec.required:
+                return Rejection(
+                    line_no,
+                    TYPE_ERROR,
+                    f"字段 {spec.name} 类型错误: 期望 {spec.type}, 实际 null",
+                    record,
+                )
+            continue
         if not _type_ok(spec, value):
             return Rejection(
                 line_no,
