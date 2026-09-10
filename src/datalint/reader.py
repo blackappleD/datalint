@@ -44,7 +44,7 @@ def detect_format(path: Union[str, Path], explicit: Optional[str]) -> str:
         return _EXTENSION_FORMATS[suffix]
 
     first_line = None
-    with open(path, encoding="utf-8") as fh:
+    with open(path, encoding="utf-8-sig") as fh:
         for line in fh:
             if line.strip():
                 first_line = line.strip()
@@ -74,7 +74,7 @@ def read_jsonl(path: Union[str, Path]) -> Iterator[ReaderItem]:
     - 空白行直接跳过, 不计数
     - 解析失败或 JSON 值不是对象时产出 Rejection(parse_error), record 为原始行文本
     """
-    with open(path, encoding="utf-8") as fh:
+    with open(path, encoding="utf-8-sig") as fh:
         for line_no, raw_line in enumerate(fh, start=1):
             text = raw_line.strip()
             if not text:
@@ -130,7 +130,7 @@ def read_csv(path: Union[str, Path], schema: tuple[FieldSpec, ...]) -> Iterator[
     required_names = {spec.name for spec in schema if spec.required}
     number_names = {spec.name for spec in schema if spec.type == TYPE_NUMBER}
 
-    with open(path, encoding="utf-8", newline="") as fh:
+    with open(path, encoding="utf-8-sig", newline="") as fh:
         rows = csv.reader(fh)
         header: Optional[list[str]] = None
         for row in rows:

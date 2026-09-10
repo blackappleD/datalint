@@ -290,3 +290,33 @@ def test_csv_column_mismatch_reject_preserves_quoting(write_csv):
     assert isinstance(rejection, Rejection)
     # 原始引号形态保留, 不会被误读为 4 个值
     assert '"Smith, John"' in rejection.record
+
+
+# ---------- BUG-002: UTF-8 BOM 剥离 ----------
+
+
+def test_jsonl_with_bom_first_line_parses(tmp_path):
+    path = tmp_path / "bom.jsonl"
+    path.write_bytes('\ufeff{"id": "1"}\n{"id": "2"}\n'.encode("utf-8"))
+
+    items = list(read_jsonl(path))
+
+    assert items == [(1, {"id": "1"}), (2, {"id": "2"})]
+
+
+def test_csv_with_bom_header_not_polluted(tmp_path):
+    path = tmp_path / "bom.csv"
+    path.write_bytes(
+        "\ufeffid,name,category,timestamp\n1,Alice,A,2026-09-10T08:00:00Z\n".encode("utf-8")
+    )
+
+    items = list(read_csv(path, SCHEMA))
+
+    assert items[0][1]["id"] == "1"  # 首列名必须是 id 而非 \ufeffid
+
+
+def test_detect_format_tolerates_bom(tmp_path):
+    path = tmp_path / "bom.txt"
+    path.write_bytes('\ufeff{"id": "1"}\n'.encode("utf-8"))
+
+    assert detect_format(path, None) == "jsonl"

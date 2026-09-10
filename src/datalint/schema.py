@@ -133,7 +133,7 @@ def load_schema(path) -> tuple[FieldSpec, ...]:
     结构/内容非法抛 SchemaValidationError(参数错误);
     文件不存在或不可读抛 OSError(运行错误).
     """
-    with open(path, encoding="utf-8") as fh:
+    with open(path, encoding="utf-8-sig") as fh:
         raw = fh.read()
     try:
         document = json.loads(raw)

@@ -22,7 +22,9 @@ v1 全部选项、退出码、报告契约、剔除明细格式不变。**所有
 | `--output-format` | 否 | `jsonl` | 干净数据输出格式 |
 | `--mask` | 否 | 不脱敏 | 可重复给出；每项为逗号分隔的 `PATTERN[:MODE]` 列表，MODE ∈ equal(默认)/contain |
 
-**默认输出路径随输出格式**: `--output-format csv` 时默认输出 `<输入名>.clean.csv`；`-o` 显式指定时原样使用。剔除明细路径规则不变（恒为 `.rejects.jsonl`，JSONL 格式）。
+**默认输出路径随输出格式**: `--output-format csv` 时默认输出 `<基底>.clean.csv`；`-o` 显式指定时原样使用。剔除明细路径规则不变（恒为 `<基底>.rejects.jsonl`，JSONL 格式）。**基底派生规则**：输入扩展名为 `.jsonl`/`.json` 时剥离扩展名（`a.jsonl` → `a`）；其他扩展名保留完整文件名（`a.csv` → `a.csv`），避免同名不同扩展输入的输出互相覆盖。
+
+**Bugfix**: 2026-09-11 — [BUG-005] 基底派生规则修订。
 
 ## 新增/变更行为契约
 

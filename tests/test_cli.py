@@ -483,7 +483,7 @@ def test_csv_input_auto_detected_by_extension(write_csv):
     code = run_cli([str(path)])
 
     assert code == 0
-    clean = read_jsonl_file(path.parent / "input.clean.jsonl")
+    clean = read_jsonl_file(path.parent / "input.csv.clean.jsonl")
     assert clean[0]["name"] == "Alice"
     assert clean[0]["timestamp"] == "2026-09-10T08:00:00Z"
 
@@ -497,7 +497,7 @@ def test_csv_in_csv_out(write_csv):
     code = run_cli([str(path), "--output-format", "csv"])
 
     assert code == 0
-    rows = read_csv_file(path.parent / "input.clean.csv")
+    rows = read_csv_file(path.parent / "input.csv.clean.csv")
     assert rows[0]["id"] == "1"
     assert rows[0]["score"] == "95"
     assert rows[0]["timestamp"] == "2026-09-10T08:00:00Z"
@@ -564,7 +564,7 @@ def test_explicit_input_format_overrides_detection(tmp_path):
     code = run_cli([str(path), "--input-format", "csv"])
 
     assert code == 0
-    clean = read_jsonl_file(tmp_path / "data.clean.jsonl")
+    clean = read_jsonl_file(tmp_path / "data.txt.clean.jsonl")
     assert clean[0]["id"] == "1"
 
 
@@ -662,7 +662,7 @@ def test_mask_applies_to_csv_output(write_csv):
 
     run_cli([str(path), "--output-format", "csv", "--mask", "email"])
 
-    rows = read_csv_file(path.parent / "input.clean.csv")
+    rows = read_csv_file(path.parent / "input.csv.clean.csv")
     assert rows[0]["email"] == "a***************m"
 
 
@@ -723,7 +723,7 @@ def test_csv_mixed_broken_rows_never_abort(write_csv, capsys):
     assert payload["errors"]["parse_error"] == 1
     assert payload["errors"]["type_error"] == 1
     assert payload["errors"]["enum_error"] == 1
-    rejects = read_jsonl_file(path.parent / "input.rejects.jsonl")
+    rejects = read_jsonl_file(path.parent / "input.csv.rejects.jsonl")
     assert len(rejects) == 3
     for reject in rejects:
         assert isinstance(reject["line"], int)
@@ -742,8 +742,8 @@ def test_csv_all_rows_broken_still_exits_0(write_csv, capsys):
     payload = json.loads(capsys.readouterr().out)
     assert payload["passed"] == 0
     assert payload["rejected"] == 3
-    assert read_jsonl_file(path.parent / "input.clean.jsonl") == []
-    assert len(read_jsonl_file(path.parent / "input.rejects.jsonl")) == 3
+    assert read_jsonl_file(path.parent / "input.csv.clean.jsonl") == []
+    assert len(read_jsonl_file(path.parent / "input.csv.rejects.jsonl")) == 3
 
 
 def test_jsonl_broken_lines_regression(write_jsonl, capsys):
@@ -766,3 +766,111 @@ def test_jsonl_broken_lines_regression(write_jsonl, capsys):
             "duplicate": 0,
         },
     }
+
+
+# ---------- Bugfix (BUG-001~006) 端到端 ----------
+
+
+def test_e2e_subsecond_timestamps_not_dedup_killed(write_jsonl, capsys):
+    path = write_jsonl(
+        [
+            valid_line("1", timestamp="2026-09-11T10:00:00.123Z"),
+            valid_line("1", timestamp="2026-09-11T10:00:00.456Z"),
+        ]
+    )
+
+    code = run_cli([str(path), "--dedup-by", "id,timestamp", "--report-format", "json"])
+
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["passed"] == 2  # 不同时刻不得误判重复
+    clean = read_jsonl_file(path.parent / "input.clean.jsonl")
+    assert clean[0]["timestamp"] == "2026-09-11T10:00:00.123Z"
+    assert clean[1]["timestamp"] == "2026-09-11T10:00:00.456Z"
+
+
+def test_e2e_bom_jsonl_first_line_kept(tmp_path, capsys):
+    path = tmp_path / "bom.jsonl"
+    line = '{"id": "1", "name": "Alice", "category": "A", "timestamp": "2026-09-10T08:00:00Z"}'
+    path.write_bytes(("\ufeff" + line + "\n").encode("utf-8"))
+
+    code = run_cli([str(path), "--report-format", "json"])
+
+    assert code == 0
+    assert json.loads(capsys.readouterr().out)["passed"] == 1
+
+
+def test_e2e_bom_csv_not_rejected_wholesale(tmp_path, capsys):
+    path = tmp_path / "bom.csv"
+    path.write_bytes(
+        "\ufeffid,name,category,timestamp\n1,Alice,A,2026-09-10T08:00:00Z\n".encode("utf-8")
+    )
+
+    code = run_cli([str(path), "--report-format", "json"])
+
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["passed"] == 1
+    assert payload["errors"]["missing_field"] == 0
+
+
+def test_e2e_naive_timestamp_warning_on_stderr(write_jsonl, capsys):
+    path = write_jsonl(
+        [
+            valid_line("1", timestamp="2026-09-11T10:00:00"),
+            valid_line("2", timestamp="2026/09/11 10:00:00"),
+            valid_line("3", timestamp="2026-09-11T10:00:00+08:00"),
+        ]
+    )
+
+    code = run_cli([str(path), "--report-format", "json"])
+
+    assert code == 0
+    captured = capsys.readouterr()
+    assert "2 条" in captured.err and "UTC" in captured.err
+    assert json.loads(captured.out)["passed"] == 3  # 警告不影响统计与退出码
+
+
+def test_e2e_no_warning_when_all_timestamps_zoned(write_jsonl, capsys):
+    path = write_jsonl([valid_line("1", timestamp="2026-09-11T10:00:00Z")])
+
+    run_cli([str(path)])
+
+    assert "警告" not in capsys.readouterr().err
+
+
+def test_e2e_same_stem_inputs_do_not_overwrite(write_jsonl, write_csv, capsys):
+    jsonl_path = write_jsonl([valid_line("from-jsonl")], name="a.jsonl")
+    csv_path = write_csv(
+        ["id", "name", "category", "timestamp"],
+        [["from-csv", "Bob", "B", "2026-09-10T08:00:00Z"]],
+        name="a.csv",
+    )
+
+    run_cli([str(jsonl_path)])
+    run_cli([str(csv_path)])
+
+    jsonl_out = read_jsonl_file(jsonl_path.parent / "a.clean.jsonl")
+    csv_out = read_jsonl_file(csv_path.parent / "a.csv.clean.jsonl")
+    assert jsonl_out[0]["id"] == "from-jsonl"  # 未被 a.csv 的输出覆盖
+    assert csv_out[0]["id"] == "from-csv"
+
+
+def test_e2e_optional_null_preserved_in_output(write_jsonl, capsys):
+    path = write_jsonl([valid_line("1", score=None)])
+
+    code = run_cli([str(path), "--report-format", "json"])
+
+    assert code == 0
+    assert json.loads(capsys.readouterr().out)["passed"] == 1
+    clean = read_jsonl_file(path.parent / "input.clean.jsonl")
+    assert clean[0]["score"] is None  # null 原样保留
+
+
+def test_e2e_required_null_still_rejected(write_jsonl, capsys):
+    path = write_jsonl([valid_line("1", name=None)])
+
+    run_cli([str(path), "--report-format", "json"])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["errors"]["type_error"] == 1

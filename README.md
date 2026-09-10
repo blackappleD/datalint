@@ -3,7 +3,7 @@
 清洗和质检结构化数据集（JSONL / CSV）的 Python 命令行工具——仅依赖标准库。
 
 - **校验**: 按 schema（内置或外部 JSON 文件）检查必填字段、字段类型、枚举取值，非法记录剔除并记录原因
-- **清洗**: 字符串去首尾空白、时间戳统一为 ISO 8601 UTC、按指定字段去重（保留首次出现）
+- **清洗**: 字符串去首尾空白、时间戳统一为 ISO 8601 UTC（保留亚秒精度；无时区输入按 UTC 处理并在结束时告警）、按指定字段去重（保留首次出现；去重字段缺失的记录跳过去重）
 - **脱敏**: `--mask` 对指定字段做掩码，支持精确（equal）与模糊（contain）两种匹配模式
 - **输出**: 干净数据（JSONL 或 CSV）+ 剔除明细 JSONL + 质检报告（JSON 或表格格式）
 
@@ -35,7 +35,7 @@ pip install -e ".[dev]"
 | `score` | 数字 | 否 | bool 不视为数字 |
 | `timestamp` | 时间戳 | 是 | 支持 ISO 8601 变体、`YYYY/MM/DD HH:MM:SS`、Unix 秒级时间戳 |
 
-schema 未定义的额外字段原样透传（字符串同样去首尾空白），不参与校验。
+schema 未定义的额外字段原样透传（字符串同样去首尾空白），不参与校验。可选字段（required: false）同时是 nullable 的——显式 `null` 不报类型错误，原样保留在输出中；必填字段的 `null` 仍按类型错误剔除。
 内置 schema 定义在 [src/datalint/schema.py](src/datalint/schema.py)。
 
 ### 外部 schema（`--schema my_schema.json`）
@@ -69,8 +69,8 @@ datalint INPUT [-o OUTPUT] [--rejects REJECTS] [--dedup-by FIELD[,FIELD...]]
 | 选项 | 默认值 | 说明 |
 |------|--------|------|
 | `INPUT` | — | 输入文件路径，JSONL 或 CSV（必需） |
-| `-o, --output` | `<输入名>.clean.<输出格式>` | 干净数据输出路径 |
-| `--rejects` | `<输入名>.rejects.jsonl` | 剔除明细输出路径（恒为 JSONL） |
+| `-o, --output` | `<基底>.clean.<输出格式>` | 干净数据输出路径；基底 = 输入名去 `.jsonl`/`.json` 扩展名，其他扩展名保留完整文件名（`a.csv` → `a.csv.clean.jsonl`，避免与 `a.jsonl` 的输出冲突） |
+| `--rejects` | `<基底>.rejects.jsonl` | 剔除明细输出路径（恒为 JSONL） |
 | `--dedup-by` | 不去重 | 逗号分隔的去重字段（必须在生效 schema 中） |
 | `--report-format` | `table` | 报告格式：`table` 或 `json` |
 | `--report-file` | 输出到 stdout | 报告写入文件 |
@@ -83,7 +83,7 @@ datalint INPUT [-o OUTPUT] [--rejects REJECTS] [--dedup-by FIELD[,FIELD...]]
 
 ## CSV 支持
 
-- 输入：带表头的标准逗号分隔 CSV（UTF-8）；数字字段按 schema 自动转换类型，转换失败按类型错误剔除；列数与表头不符的行剔除并记录原因，处理不中断
+- 输入：带表头的标准逗号分隔 CSV（UTF-8，自动剥离 BOM——JSONL 输入同样支持带 BOM 文件）；数字字段按 schema 自动转换类型，转换失败按类型错误剔除；列数与表头不符的行剔除并记录原因，处理不中断
 - 输出：`--output-format csv` 产出带表头的 CSV，列为全部记录字段的首见顺序并集，缺失值输出为空
 
 ```bash

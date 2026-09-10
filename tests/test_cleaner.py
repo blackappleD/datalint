@@ -132,14 +132,14 @@ def test_dedup_multiple_fields():
     assert dedup.check(3, record_with(name="A", category="A")) is not None
 
 
-def test_dedup_missing_optional_field_uses_sentinel():
+def test_dedup_missing_optional_field_skips_dedup():
+    # BUG-003: 缺失去重字段不构成"内容相同"的证据 → 跳过去重, 全部保留
     dedup = Deduplicator(("score",))
     no_score_1 = record_with()
     no_score_2 = record_with(name="Bob")
 
     assert dedup.check(1, no_score_1) is None
-    # 两条记录都缺 score → 缺失值相同 → 判为重复
-    assert dedup.check(2, no_score_2) is not None
+    assert dedup.check(2, no_score_2) is None
 
 
 def test_no_dedup_fields_means_no_dedup():
@@ -157,3 +157,95 @@ def test_dedup_applies_after_cleaning():
 
     assert dedup.check(1, first) is None
     assert dedup.check(2, second) is not None
+
+
+# ---------- BUG-001: 亚秒精度保留 ----------
+
+
+def test_subsecond_precision_preserved():
+    assert (
+        normalize_timestamp("2026-09-11T10:00:00.123Z") == "2026-09-11T10:00:00.123Z"
+    )
+    assert (
+        normalize_timestamp("2026-09-11T10:00:00.456Z") == "2026-09-11T10:00:00.456Z"
+    )
+
+
+def test_subsecond_trailing_zeros_stripped():
+    assert normalize_timestamp("2026-09-11T10:00:00.100000Z") == "2026-09-11T10:00:00.1Z"
+
+
+def test_zero_microseconds_keeps_second_precision():
+    assert normalize_timestamp("2026-09-11T10:00:00.000Z") == "2026-09-11T10:00:00Z"
+
+
+def test_unix_float_fraction_preserved():
+    assert normalize_timestamp(1789027200.5) == "2026-09-10T08:00:00.5Z"
+
+
+def test_dedup_by_timestamp_distinguishes_subseconds():
+    dedup = Deduplicator(("timestamp",))
+    first = clean(1, record_with(timestamp="2026-09-11T10:00:00.123Z"))
+    second = clean(2, record_with(timestamp="2026-09-11T10:00:00.456Z"))
+
+    assert dedup.check(1, first) is None
+    assert dedup.check(2, second) is None  # 不同时刻不得误判重复
+
+
+# ---------- BUG-003: 去重字段缺失跳过去重 ----------
+
+
+def test_dedup_missing_field_records_all_kept():
+    dedup = Deduplicator(("score",))
+    no_score_1 = record_with()
+    no_score_2 = record_with(name="Bob")
+    no_score_3 = record_with(name="Carol")
+
+    # 缺失去重字段的记录跳过去重, 全部保留
+    assert dedup.check(1, no_score_1) is None
+    assert dedup.check(2, no_score_2) is None
+    assert dedup.check(3, no_score_3) is None
+
+
+def test_dedup_missing_field_does_not_register_key():
+    dedup = Deduplicator(("score",))
+
+    assert dedup.check(1, record_with()) is None  # 缺失: 跳过
+    assert dedup.check(2, record_with(score=1.0)) is None  # 有值: 首现
+    assert dedup.check(3, record_with(score=1.0)) is not None  # 有值重复: 剔除
+
+
+def test_dedup_partial_missing_in_multi_fields_skips():
+    dedup = Deduplicator(("id", "score"))
+
+    assert dedup.check(1, record_with(id="1")) is None  # score 缺失 → 跳过
+    assert dedup.check(2, record_with(id="1")) is None  # 同样跳过, 不判重
+
+
+# ---------- BUG-004: naive 时间戳计数 ----------
+
+
+def test_naive_timestamps_counted():
+    from datalint.cleaner import CleanStats
+
+    stats = CleanStats()
+    cleaner.clean(1, record_with(timestamp="2026-09-11T10:00:00"), SCHEMA, stats)
+    cleaner.clean(2, record_with(timestamp="2026/09/11 10:00:00"), SCHEMA, stats)
+    cleaner.clean(3, record_with(timestamp="2026-09-11T10:00:00+08:00"), SCHEMA, stats)
+    cleaner.clean(4, record_with(timestamp=1789027200), SCHEMA, stats)
+
+    # 前两条无时区(ISO 无时区/斜杠格式), 后两条不算
+    assert stats.naive_timestamps == 2
+
+
+# ---------- BUG-006: 可选时间戳字段显式 null ----------
+
+
+def test_optional_timestamp_null_skips_normalization():
+    from datalint.schema import FieldSpec, TYPE_TIMESTAMP
+
+    schema = (FieldSpec("ts", TYPE_TIMESTAMP, required=False),)
+    cleaned = cleaner.clean(1, {"ts": None}, schema)
+
+    assert not isinstance(cleaned, Rejection)
+    assert cleaned["ts"] is None

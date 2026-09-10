@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from datalint.cleaner import Deduplicator, clean
+from datalint.cleaner import CleanStats, Deduplicator, clean
 from datalint.masker import MaskRule, apply_mask, parse_mask_rules
 from datalint.reader import FormatDetectionError, detect_format, read_csv, read_jsonl
 from datalint.reporter import Report, render_json, render_table
@@ -79,7 +79,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _default_path(input_path: Path, suffix: str) -> Path:
-    return input_path.with_name(input_path.stem + suffix)
+    # 仅剥离 .jsonl/.json 扩展名; 其他扩展名(如 .csv)保留完整文件名作为基底,
+    # 避免 a.jsonl 与 a.csv 的默认输出互相覆盖(BUG-005)
+    if input_path.suffix.lower() in (".jsonl", ".json"):
+        base = input_path.stem
+    else:
+        base = input_path.name
+    return input_path.with_name(base + suffix)
 
 
 def _parse_dedup_fields(
@@ -101,7 +107,10 @@ def _parse_dedup_fields(
 
 
 def _process(
-    item, dedup: Deduplicator, schema: tuple[FieldSpec, ...]
+    item,
+    dedup: Deduplicator,
+    schema: tuple[FieldSpec, ...],
+    stats: Optional[CleanStats] = None,
 ) -> tuple[Optional[dict], Optional[Rejection]]:
     """将 reader 产出的一项处理为 (干净记录, None) 或 (None, Rejection)."""
     if isinstance(item, Rejection):
@@ -110,7 +119,7 @@ def _process(
     rejection = validate(line_no, record, schema)
     if rejection is not None:
         return None, rejection
-    cleaned = clean(line_no, record, schema)
+    cleaned = clean(line_no, record, schema, stats)
     if isinstance(cleaned, Rejection):
         return None, cleaned
     rejection = dedup.check(line_no, cleaned)
@@ -155,6 +164,7 @@ def run(
 
     dedup = Deduplicator(dedup_fields)
     report = Report()
+    stats = CleanStats()
     rejects_tmp = rejects_path.with_name(rejects_path.name + ".tmp")
 
     # writer 内部走临时文件 + 原子替换, 任何失败不留残缺输出
@@ -168,7 +178,7 @@ def run(
                 else read_jsonl(input_path)
             )
             for item in items:
-                record, rejection = _process(item, dedup, schema)
+                record, rejection = _process(item, dedup, schema, stats)
                 if rejection is not None:
                     rejects_fh.write(rejection.to_json_line() + "\n")
                     report.count_reject(rejection.error_type)
@@ -204,6 +214,12 @@ def run(
         _cleanup(rejects_tmp)
         print(f"错误: {exc}", file=sys.stderr)
         return EXIT_RUNTIME_ERROR
+
+    if stats.naive_timestamps:
+        print(
+            f"警告: {stats.naive_timestamps} 条记录的时间戳未包含时区信息, 已按 UTC 处理",
+            file=sys.stderr,
+        )
 
     rendered = render_json(report) if args.report_format == "json" else render_table(report)
     try:

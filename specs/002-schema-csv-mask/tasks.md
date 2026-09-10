@@ -122,6 +122,22 @@
 
 ---
 
+## 阶段 8: Bugfix (2026-09-11)
+
+**Bugfix**: 2026-09-11 — [BUG-001~006] Updated from bugfix patch
+
+**目的**: 修复验收后报告的 6 个缺陷（明细见 `bugs/BUG-001.md` ~ `bugs/BUG-006.md`），测试先行
+
+- [X] T018 [BUG-001] 时间戳保留亚秒精度：`src/datalint/cleaner.py` 的 `normalize_timestamp` 微秒非零时输出 `.ffffff`（去尾零），微秒为零维持秒级；在 `tests/test_cleaner.py` 补测试（`.123Z` 与 `.456Z` 不再归一相同、`--dedup-by timestamp` 不误杀、尾零剥离、Unix 浮点小数保留）
+- [X] T019 [BUG-002] 剥离 UTF-8 BOM：`src/datalint/reader.py`（read_jsonl/read_csv/detect_format 嗅探）与 `src/datalint/schema.py`（load_schema）读取改用 `encoding="utf-8-sig"`；在 `tests/test_reader.py`/`tests/test_cli.py` 补带 BOM 的 JSONL 与 CSV 端到端测试
+- [X] T020 [BUG-003] 去重字段缺失跳过去重：`src/datalint/cleaner.py` 的 `Deduplicator.check` 键含 MISSING 时直接返回 None（不判重不注册）；更新 `tests/test_cleaner.py::test_dedup_missing_optional_field_uses_sentinel` 为新语义并补多缺失记录全保留用例
+- [X] T021 [BUG-004] naive 时间戳告警：`src/datalint/cleaner.py` 的 `clean` 接收可选统计对象累计"按 UTC 假定"次数，`src/datalint/cli.py` 处理结束后向 stderr 输出一次汇总警告（不影响退出码/报告）；在 `tests/test_cli.py` 补断言 stderr 警告与报告数字不变
+- [X] T022 [BUG-005] 默认路径基底规则：`src/datalint/cli.py` 的 `_default_path` 仅剥离 `.jsonl`/`.json` 扩展名，其余保留完整文件名；更新 `tests/test_cli.py` 中 CSV 输入的默认路径断言并补 `a.jsonl`/`a.csv` 互不覆盖用例
+- [X] T023 [BUG-006] 可选字段 nullable：`src/datalint/validator.py` 可选字段值为 None 时跳过类型/枚举校验，`src/datalint/cleaner.py` 时间戳字段值为 None 时跳过归一；必填字段 null 仍 type_error；在 `tests/test_validator.py`/`tests/test_cleaner.py`/`tests/test_cli.py` 补正反用例（JSONL 输出保留 null）
+- [X] T024 Bugfix 回归验收：全量 `pytest` 通过、`/speckit.bugfix.verify` 一致性检查通过、README 假设章节与实现同步（依赖 T018–T023）
+
+---
+
 ## 依赖关系与执行顺序
 
 ### 阶段依赖关系

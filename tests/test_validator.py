@@ -97,3 +97,24 @@ def test_first_error_only_by_schema_order():
 
     assert rejection.error_type == MISSING_FIELD
     assert "id" in rejection.reason
+
+
+# ---------- BUG-006: 可选字段显式 null ----------
+
+
+def test_optional_field_null_passes():
+    assert validate(1, valid_record(score=None)) is None
+
+
+def test_required_field_null_is_type_error():
+    rejection = validate(1, valid_record(name=None))
+
+    assert rejection is not None
+    assert rejection.error_type == TYPE_ERROR
+
+
+def test_optional_enum_null_passes():
+    from datalint.schema import FieldSpec, TYPE_ENUM
+
+    schema = (FieldSpec("cat", TYPE_ENUM, required=False, enum_values=frozenset({"A"})),)
+    assert validator.validate(1, {"cat": None}, schema) is None
